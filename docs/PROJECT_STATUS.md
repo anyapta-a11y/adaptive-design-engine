@@ -18,6 +18,16 @@
 - Эксперименты: `experiments/spike_01/` (RESULTS.md, QA_REPORT.md)
 - Агенты: `.claude/agents/`
 
+## Где остановились (2026-10-14)
+- Прототип v0.2 в `ade/`: каталог, сборка, QA; вертикальные списки, свободные элементы, нарисованные столбцы. 36 тестов.
+- Сквозной пример: `examples/northern/` (Word → 8 слайдов, QA PASS). Skill: `.claude/skills/ade-build/`.
+- Библиотека Анны (экспорт Canva, 10 слайдов) лежит ТОЛЬКО у неё: `Агент Шаблон\test\`. В git не класть без её согласия.
+- В работе у неё на компьютере: копия `test\library_native.pptx` — слайды 3, 5, 8 перерисовываются нативными диаграммой/таблицами (решение Анны). Статус неизвестен: сессия на её компьютере оборвалась.
+- Следующее: разметить её библиотеку (LIBRARY_GUIDE), прогнать Word-документ локально у неё.
+
+## Как запустить локально
+`pip install python-pptx pillow lxml python-docx` → `python examples/make_library.py examples/library.pptx` → `python -m ade build --library examples/library.pptx --plan examples/plan_demo.json --out out.pptx` → `python -m ade qa out.pptx --plan examples/plan_demo.json`.
+
 ## Открытые вопросы к владельцу
 1. GO на ворота A–C или другое решение?
 2. Доступ к PowerPoint (desktop/web) и Copilot/Claude for PowerPoint для Gate B.
