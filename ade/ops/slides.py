@@ -79,3 +79,4 @@ def drop_slides(prs, slides) -> None:
             rid = sld.rId
             lst.remove(sld)
             prs.part.drop_rel(rid)
+    prs.part.rename_slide_parts([sld.rId for sld in lst])    # slide1..N подряд

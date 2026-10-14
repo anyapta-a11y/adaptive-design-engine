@@ -130,7 +130,6 @@ def build_slide(prs, src, entry, ps, action, num):
     elif "chart" in ps:
         raise PlanError(f"{where}: в слайде {entry['id']!r} нет диаграммы")
     # подгонка текста: единый кегль для однотипных полей
-    ab = {id(e): b for e, b, _ in geom.walk([e for e in tree if e.tag in geom.SHAPE_TAGS])}
     groups: dict[str, list] = {}
     for e, b, _ in geom.walk([e for e in tree if e.tag in geom.SHAPE_TAGS]):
         n = geom.name_of(e) or ""
