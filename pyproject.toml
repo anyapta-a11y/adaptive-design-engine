@@ -1,0 +1,15 @@
+[project]
+name = "ade"
+version = "0.1.0"
+description = "Adaptive Design Engine: prototype v0 (slide library -> PPTX)"
+requires-python = ">=3.10"
+dependencies = ["python-pptx>=1.0", "Pillow", "lxml", "openpyxl"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools]
+packages = ["ade", "ade.ops"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
