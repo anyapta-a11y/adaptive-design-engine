@@ -6,6 +6,7 @@ import re
 
 from pptx import Presentation
 from pptx.oxml.ns import qn
+from pptx.shapes.graphfrm import GraphicFrame
 
 from . import geom
 from . import textfit as tf
@@ -13,6 +14,7 @@ from .errors import MarkupError, require_file
 from .ops.repeat import (CONN_RE, UNIT_RE, detect_axis, unit_box, unit_elements,
                          unit_numbers)
 from .ops import table as tbl_ops
+from . import slots as sl
 
 FAMILIES = {"title", "cards", "process", "kpi", "table", "chart", "text", "rows", "bars"}
 SLOTS = ("title", "subtitle", "body", "note")
@@ -79,11 +81,20 @@ def analyse_slide(slide, num: int, slide_h: int) -> dict:
             raise MarkupError(f"{where}: некорректное имя {n!r}, ожидается connector[N]")
 
     slots = []
+    found: dict[str, tuple] = {}
+    for n, el, ab in sl.slot_elements(tree):
+        if n in found:
+            raise MarkupError(f"{where}: имя слота {n!r} встречается дважды")
+        found[n] = (el, ab)
+        slots.append({"name": n, **_cap(ab, el)})
     for s in SLOTS:
-        if s in seen:
-            if tf.txbody(seen[s]) is None:
-                raise MarkupError(f"{where}: {s!r} не содержит текста")
-            slots.append({"name": s, **_cap(ab_of[id(seen[s])], seen[s])})
+        if s in seen and s not in found:
+            raise MarkupError(f"{where}: {s!r} не содержит текста")
+    slot_names = set(found)
+    chart_els = sl.chart_elements(tree)
+    for n, el in seen.items():
+        if sl.CHART_RE.match(n or "") and n not in chart_els:
+            raise MarkupError(f"{where}: фигура {n!r} не является нативной диаграммой")
 
     nums = unit_numbers(tree)
     if nums != list(range(1, len(nums) + 1)):
@@ -142,17 +153,17 @@ def analyse_slide(slide, num: int, slide_h: int) -> dict:
         top_y = geom.get_box(seen["table"])[1]
         table = {"cols": len(tb.find(qn("a:tblGrid")).findall(qn("a:gridCol"))), "rows": len(trs),
                  "max_rows": int((slide_h - tbl_ops.BOTTOM_MARGIN - top_y) // min_h)}
-    if "chart" in seen:
-        el = seen["chart"]
-        if el.tag != geom.GF or el.find(".//" + qn("c:chart")) is None:
-            raise MarkupError(f"{where}: фигура 'chart' не является нативной диаграммой")
-        ch = next(s for s in slide.shapes if s.name == "chart").chart
-        chart = {"type": str(ch.chart_type).split(".")[-1].split(" ")[0],
-                 "series": len(list(ch.plots[0].series)),
-                 "categories": len(list(ch.plots[0].categories))}
+    charts = []
+    for n in sorted(chart_els, key=sl.chart_sort_key):
+        ch = GraphicFrame(chart_els[n], slide.shapes).chart
+        charts.append({"name": n, "type": str(ch.chart_type).split(".")[-1].split(" ")[0],
+                       "series": len(list(ch.plots[0].series)),
+                       "categories": len(list(ch.plots[0].categories))})
+    if charts:
+        chart = {k: v for k, v in charts[0].items() if k != "name"}
     need = NEEDS[fam]
     ok = {"items": bool(nums), "table": table is not None, "chart": chart is not None,
-          "body": "body" in seen, "title": "title" in seen}[need]
+          "body": "body" in slot_names, "title": "title" in slot_names}[need]
     if not ok:
         raise MarkupError(f"{where}: для семейства {fam!r} нужна фигура/слоты {need!r}")
     axis = meta.get("axis") or detect_axis([unit_box(unit_elements(tree, k)) for k in nums])
@@ -175,7 +186,8 @@ def analyse_slide(slide, num: int, slide_h: int) -> dict:
             "item_bar": has_bar, "bar_max": bar_max,
             "item_deco": sorted(x for x in (special_by_item[1] if nums else ()) if x != "bar"),
             "item_fields": [{"name": n, **v} for n, v in fields_by_item.get(1, {}).items()],
-            "table": table, "chart": chart}
+            "table": table, "chart": chart, "charts": charts,
+            "static_text": sl.static_text(tree)}
 
 
 def _item_tf(el):

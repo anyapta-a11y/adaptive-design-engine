@@ -14,7 +14,10 @@ from openpyxl import load_workbook
 from pptx import Presentation
 from pptx.oxml.ns import qn
 
+from pptx.shapes.graphfrm import GraphicFrame
+
 from . import geom
+from . import slots as sl
 from . import textfit as tf
 from .build import sidecar_path
 from .errors import AdeError, require_file
@@ -98,13 +101,15 @@ def check_slide(i, slide, ps, W, H, fails, warns, safe=SAFE):
             if not str(val).strip():
                 fails.append(f"{pre}: пустой слот {key!r} в плане")
             actual = _txt(tf.txbody(got[0][0])) if tf.txbody(got[0][0]) is not None else ""
-            if actual.strip() != str(val).strip():
+            if actual.strip() != str(val).replace("**", "").strip():
                 fails.append(f"{pre}: потеря контента в {key!r}: ожидалось {str(val)[:40]!r}…, в файле {actual[:40]!r}…")
         _check_bars(i, names, ps, fails)
         if "table" in ps:
             _check_table_content(i, names.get("table"), ps["table"], fails)
-        if "chart" in ps:
-            _check_chart_content(i, slide, ps["chart"], fails)
+        chart_els = sl.chart_elements(tree)
+        for k in sorted((k for k in ps if sl.CHART_RE.match(k)), key=sl.chart_sort_key):
+            _check_chart_content(i, GraphicFrame(chart_els[k], slide.shapes) if k in chart_els else None,
+                                 ps[k], fails, k)
     return {geom.name_of(e) for e, _, _ in walked}
 
 
@@ -162,10 +167,9 @@ def _check_table_content(i, got, rows, fails):
                 fails.append(f"слайд {i}: таблица [{r + 1},{c + 1}]: потеря контента ({str(v)[:30]!r})")
 
 
-def _check_chart_content(i, slide, spec, fails):
-    shape = next((s for s in slide.shapes if s.has_chart), None)
+def _check_chart_content(i, shape, spec, fails, key="chart"):
     if shape is None:
-        fails.append(f"слайд {i}: потеря контента: нет нативной диаграммы"); return
+        fails.append(f"слайд {i}: потеря контента: нет нативной диаграммы {key!r}"); return
     ch = shape.chart
     plot = ch.plots[0]
     cats = [str(c) for c in plot.categories]

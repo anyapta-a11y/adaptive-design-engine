@@ -10,25 +10,74 @@ from .. import textfit as tf
 MIN_SCALE = 0.75
 
 
+def _is_bold(rpr) -> bool:
+    if rpr is None:
+        return False
+    if rpr.get("b") in ("1", "true"):
+        return True
+    lat = rpr.find(qn("a:latin"))
+    return lat is not None and "bold" in (lat.get("typeface") or "").lower()
+
+
+def _segments(line: str) -> list:
+    """'a **b** c' -> [('a ', False), ('b', True), (' c', False)]; маркеры не попадают в результат."""
+    out, bold = [], False
+    for i, part in enumerate(line.split("**")):
+        if i:
+            bold = not bold
+        if part:
+            out.append((part, bold))
+    return out
+
+
 def set_text(txb, text: str) -> None:
-    """Текст в первый run (форматирование сохраняется); '\\n' -> новые абзацы с тем же форматом."""
+    """Текст в первый run (форматирование сохраняется); '\\n' -> новые абзацы с тем же форматом.
+    '**...**' -> выделение: rPr жирного run шаблона (иначе rPr обычного с b=1)."""
     ps = txb.findall(qn("a:p"))
     tmpl = copy.deepcopy(ps[0])
     runs = tmpl.findall(qn("a:r"))
-    for extra in tmpl.findall(qn("a:br")) + tmpl.findall(qn("a:fld")) + runs[1:]:
-        tmpl.remove(extra)
+    end = tmpl.find(qn("a:endParaRPr"))
+    rprs = [r.find(qn("a:rPr")) for r in runs]
     if not runs:
-        r = tmpl.makeelement(qn("a:r"), {})
-        end = tmpl.find(qn("a:endParaRPr"))
-        if end is not None:
-            rpr = copy.deepcopy(end); rpr.tag = qn("a:rPr"); r.append(rpr)
-        t = r.makeelement(qn("a:t"), {}); r.append(t)
-        (end.addprevious(r) if end is not None else tmpl.append(r))
+        base = copy.deepcopy(end) if end is not None else None
+        if base is not None:
+            base.tag = qn("a:rPr")
+        normal, bold_src = base, None
+    else:
+        bold_src = next((x for x in rprs if _is_bold(x)), None)
+        normal = next((x for x in rprs if not _is_bold(x) and x is not None), None)
+        if normal is None:
+            normal = next((x for x in rprs if not _is_bold(x)), None)    # run без rPr
+        if normal is None:
+            normal = rprs[0]                                              # всё жирное
+    for extra in tmpl.findall(qn("a:r")) + tmpl.findall(qn("a:br")) + tmpl.findall(qn("a:fld")):
+        tmpl.remove(extra)
+    # rPr для первого run шаблона, как раньше (без маркеров)
+    plain = rprs[0] if runs else normal
     for p in ps:
         txb.remove(p)
     for line in text.split("\n"):
         p = copy.deepcopy(tmpl)
-        p.find(qn("a:r")).find(qn("a:t")).text = line
+        segs = _segments(line)
+        has_marks = "**" in line
+        if not segs:
+            segs = [("", False)]
+        for t, b in segs:
+            r = p.makeelement(qn("a:r"), {})
+            if has_marks:
+                src = (bold_src if bold_src is not None else normal) if b else normal
+                rpr = copy.deepcopy(src) if src is not None else None
+                if b and bold_src is None:
+                    if rpr is None:
+                        rpr = r.makeelement(qn("a:rPr"), {})
+                    rpr.set("b", "1")
+            else:
+                rpr = copy.deepcopy(plain) if plain is not None else None
+            if rpr is not None:
+                r.append(rpr)
+            te = r.makeelement(qn("a:t"), {}); te.text = t; r.append(te)
+            (p.find(qn("a:endParaRPr")).addprevious(r) if p.find(qn("a:endParaRPr")) is not None
+             else p.append(r))
         txb.append(p)
 
 

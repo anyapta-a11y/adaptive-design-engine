@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 from pptx.chart.data import CategoryChartData
+import copy
+
 from pptx.dml.color import RGBColor
+from pptx.oxml.ns import qn
 
 from ..errors import PlanError
 
@@ -25,6 +28,49 @@ def _rgb(ser):
         return None
 
 
+def _idx(el) -> int:
+    return int(el.find(qn("c:idx")).get("val"))
+
+
+def _save_points(plot):
+    """Поточечные c:dPt и c:dLbl каждой серии (по порядку)."""
+    out = []
+    for ser in plot.series:
+        el = ser._element
+        dl = el.find(qn("c:dLbls"))
+        out.append(([copy.deepcopy(d) for d in el.findall(qn("c:dPt"))],
+                    [copy.deepcopy(d) for d in dl.findall(qn("c:dLbl"))] if dl is not None else []))
+    return out
+
+
+_AFTER_DPT = ("c:dLbls", "c:trendline", "c:errBars", "c:cat", "c:val", "c:xVal", "c:yVal",
+              "c:smooth", "c:shape", "c:extLst")
+
+
+def _restore_points(plot, saved, ncat: int):
+    """После replace_data: вернуть поточечные заливки/подписи для индексов < ncat, убрать лишние."""
+    for ser, (dpts, dlbls) in zip(plot.series, saved):
+        el = ser._element
+        for d in el.findall(qn("c:dPt")):
+            if _idx(d) >= ncat:
+                el.remove(d)
+        have = {_idx(d) for d in el.findall(qn("c:dPt"))}
+        for d in dpts:
+            if _idx(d) < ncat and _idx(d) not in have:
+                nxt = next((c for t in _AFTER_DPT for c in el.findall(qn(t))), None)
+                (nxt.addprevious(d) if nxt is not None else el.append(d))
+        dl = el.find(qn("c:dLbls"))
+        if dl is None:
+            continue
+        for d in dl.findall(qn("c:dLbl")):
+            if _idx(d) >= ncat:
+                dl.remove(d)
+        have = {_idx(d) for d in dl.findall(qn("c:dLbl"))}
+        for d in reversed(dlbls):
+            if _idx(d) < ncat and _idx(d) not in have:
+                dl.insert(0, d)
+
+
 def fill_chart(chart, spec: dict) -> None:
     """chart: pptx.chart.chart.Chart (объект нового слайда)."""
     validate(spec)
@@ -40,8 +86,10 @@ def fill_chart(chart, spec: dict) -> None:
     cd.categories = [str(c) for c in spec["categories"]]
     for s in spec["series"]:
         cd.add_series(str(s["name"]), list(s["values"]))
+    saved = _save_points(plot)
     chart.replace_data(cd)
     plot = chart.plots[0]
+    _restore_points(plot, saved, len(spec["categories"]))
     given = spec.get("colors") or []
     known = [c for c in old if c]
     for i, ser in enumerate(plot.series):

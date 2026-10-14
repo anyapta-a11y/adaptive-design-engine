@@ -13,6 +13,26 @@ def iter_blocks(doc):
         elif tag == 'tbl':
             yield Table(child, doc)
 
+def marked_text(par):
+    """Текст абзаца с **...** вокруг жирных run'ов (если жирно не всё)."""
+    runs = [(r.text, bool(r.bold)) for r in par.runs if r.text]
+    if not runs or all(b for _, b in runs) or not any(b for _, b in runs):
+        return par.text.strip()
+    out, cur, bold = [], '', False
+    for t, b in runs + [('', None)]:
+        if b != bold and cur:
+            if bold:
+                core = cur.strip()
+                lead, trail = cur[:len(cur) - len(cur.lstrip())], cur[len(cur.rstrip()):]
+                out.append(lead + ('**' + core + '**' if core else '') + trail)
+            else:
+                out.append(cur)
+            cur = ''
+        bold = b if b is not None else bold
+        cur += t
+    return ''.join(out).strip()
+
+
 def render(path):
     out = []
     for b in iter_blocks(Document(path)):
@@ -21,6 +41,9 @@ def render(path):
             if not text:
                 continue
             style = (b.style.name or '').lower()
+            is_head = style in ('title', 'название') or style.startswith('heading') or style.startswith('заголовок')
+            if not is_head:
+                text = marked_text(b) or text
             if style in ('title', 'название'):
                 out.append('# ' + text)
             elif style.startswith('heading') or style.startswith('заголовок'):

@@ -6,10 +6,12 @@ from pathlib import Path
 
 from pptx import Presentation
 from pptx.oxml.ns import qn
+from pptx.shapes.graphfrm import GraphicFrame
 
 from . import geom
 from . import textfit as tf
-from .catalog import SLOTS, build_catalog
+from . import slots as sl
+from .catalog import build_catalog
 from .errors import PlanError, require_file
 from .ops import chart as chart_ops
 from .ops import table as table_ops
@@ -76,6 +78,14 @@ def _check_text(v, where):
     return v
 
 
+def _num_width(tree) -> int:
+    """Ширина нулевого заполнения номера по тексту шаблона item[1].num ('01' -> 2), иначе 0."""
+    el = _find(tree, "item[1].num")
+    txb = tf.txbody(el) if el is not None else None
+    t = sl.text_of(txb).strip() if txb is not None else ""
+    return len(t) if len(t) > 1 and t.isdigit() and t.startswith("0") else 0
+
+
 def build_slide(prs, src, entry, ps, action, num):
     where = f"слайд плана {num}"
     new = copy_slide(prs, src)
@@ -93,19 +103,20 @@ def build_slide(prs, src, entry, ps, action, num):
         if r["cloned"] or r["deleted"]:
             info["action"] = "clone" if r["cloned"] else "trim"
     top = _top(tree)
-    # поля верхнего уровня
+    # именованные слоты (в том числе во вложенных группах)
     fields = ps.get("fields", {})
+    slot_els = {n: e for n, e, _ in sl.slot_elements(tree)}
     for k in fields:
-        if k not in SLOTS or k not in top:
-            raise PlanError(f"{where}: слота {k!r} нет в слайде {entry['id']!r}")
-    for k in SLOTS:
-        if k in top:
-            if k in fields:
-                set_text(tf.txbody(top[k]), _check_text(fields[k], f"{where}.fields.{k}"))
-            else:
-                tree.remove(top[k])
+        if k not in slot_els:
+            raise PlanError(f"{where}: слота {k!r} нет в слайде {entry['id']!r} (есть: {sorted(slot_els)})")
+    for k, el in slot_els.items():
+        if k in fields:
+            set_text(tf.txbody(el), _check_text(fields[k], f"{where}.fields.{k}"))
+        else:
+            el.getparent().remove(el)
     # элементы
     items = ps.get("items") or []
+    num_fmt = _num_width(tree)
     allowed = {f["name"] for f in entry["item_fields"]}
     if entry.get("item_bar"):
         allowed.add("bar")
@@ -126,7 +137,7 @@ def build_slide(prs, src, entry, ps, action, num):
             elif f in it:
                 set_text(tf.txbody(el), _check_text(it[f], f"{where}.items[{i}].{f}"))
             elif f == "num":
-                set_text(tf.txbody(el), str(i))
+                set_text(tf.txbody(el), str(i).zfill(num_fmt))
             else:
                 el.getparent().remove(el)
     # таблица / диаграмма
@@ -138,13 +149,14 @@ def build_slide(prs, src, entry, ps, action, num):
         info["warnings"] += r["warnings"]
     elif "table" in ps:
         raise PlanError(f"{where}: в слайде {entry['id']!r} нет таблицы")
-    if entry["chart"]:
-        if "chart" not in ps:
-            raise PlanError(f"{where}: для слайда {entry['id']!r} нужен ключ chart")
-        shape = next(s for s in new.shapes if s.name == "chart")
-        chart_ops.fill_chart(shape.chart, ps["chart"])
-    elif "chart" in ps:
-        raise PlanError(f"{where}: в слайде {entry['id']!r} нет диаграммы")
+    chart_els = sl.chart_elements(tree)
+    for k in ps:
+        if sl.CHART_RE.match(k) and k not in chart_els:
+            raise PlanError(f"{where}: в слайде {entry['id']!r} нет диаграммы {k!r}")
+    for k in sorted(chart_els, key=sl.chart_sort_key):
+        if k not in ps:
+            raise PlanError(f"{where}: для слайда {entry['id']!r} нужен ключ {k}")
+        chart_ops.fill_chart(GraphicFrame(chart_els[k], new.shapes).chart, ps[k])
     # подгонка текста: единый кегль для однотипных полей
     groups: dict[str, list] = {}
     for e, b, _ in geom.walk([e for e in tree if e.tag in geom.SHAPE_TAGS]):
@@ -154,7 +166,7 @@ def build_slide(prs, src, entry, ps, action, num):
             continue
         m = n.split("].", 1)
         key = f"item.{m[1]}" if ITEM_RE.match(m[0] + "]") and len(m) == 2 else n
-        if n in SLOTS or key.startswith("item."):
+        if n in slot_els or key.startswith("item."):
             groups.setdefault(key, []).append((txb, b[2], b[3]))
     for key, members in groups.items():
         r = fit_uniform(members)
