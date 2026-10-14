@@ -21,7 +21,7 @@ def _rezip(src, dst, fn):
 def test_e2e_demo_pass(demo_out, demo_plan):
     r = run_qa(demo_out, demo_plan)
     assert r["status"] == "PASS", r["fails"]
-    assert r["slides"] == 10 and (demo_out.parent / "qa.json").exists()
+    assert r["slides"] == 12 and (demo_out.parent / "qa.json").exists()
     assert any("достроен" in w for w in r["warns"])
 
 
@@ -29,7 +29,7 @@ def test_e2e_demo_pass(demo_out, demo_plan):
 def test_e2e_pdf(demo_out, demo_plan):
     r = run_qa(demo_out, demo_plan, pdf=True)
     assert r["status"] == "PASS", r["fails"]
-    assert r["pdf"]["pages"] == 10 and Path(r["pdf"]["path"]).exists()
+    assert r["pdf"]["pages"] == 12 and Path(r["pdf"]["path"]).exists()
 
 
 def test_qa_catches_duplicate_ids(demo_out, demo_plan, tmp_path):

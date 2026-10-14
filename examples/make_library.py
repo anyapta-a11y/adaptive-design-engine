@@ -16,7 +16,7 @@ from pptx.util import Emu, Pt
 NAVY, ACCENT, TEAL = "1F2A44", "2E6FDB", "1C9C8C"
 LIGHT, ZEBRA, INK, MUTED = "F1F4F9", "E6ECF5", "22283A", "5B6475"
 FONT = "Inter"
-X0, SPAN = 0.6, 12.133
+X0, SPAN = 0.7, 11.933     # поля слайда >= 5% (безопасное поле QA)
 
 
 def I(v):
@@ -132,6 +132,46 @@ def kpi(prs, n):
         textbox(g.shapes, f"item[{i + 1}].label", x + 0.4, 4.0, w - 0.7, 1.4, "Подпись показателя", 16, False, INK)
 
 
+def line(shapes, name, x1, y1, x2, y2, color=ZEBRA, width=1.5):
+    cn = shapes.add_connector(MSO_CONNECTOR.STRAIGHT, I(x1), I(y1), I(x2), I(y2))
+    _nostyle(cn)
+    cn.name = name
+    cn.line.color.rgb = rgb(color)
+    cn.line.width = Pt(width)
+    return cn
+
+
+def rows(prs, n):
+    """Вертикальный список «свободных» строк: фигуры item[n].* без общей группы."""
+    s = new_slide(prs, f"ade: id=rows-{n}; family=rows; "
+                       f"purpose=Вертикальный список из {n} строк: номер, заголовок, пояснение (оглавление, этапы, пункты)")
+    h, step = 0.95, 1.1
+    for i in range(n):
+        y, k = 1.9 + i * step, i + 1
+        textbox(s.shapes, f"item[{k}].num", X0, y, 0.9, h - 0.05, f"{k:02d}", 28, True, ACCENT,
+                anchor=MSO_ANCHOR.MIDDLE)
+        textbox(s.shapes, f"item[{k}].title", X0 + 1.1, y, 3.6, h - 0.05, "Заголовок строки", 20, True, NAVY,
+                anchor=MSO_ANCHOR.MIDDLE)
+        textbox(s.shapes, f"item[{k}].text", X0 + 4.9, y, SPAN - 4.9, h - 0.05,
+                "Пояснение к строке в одном-двух предложениях.", 15, False, INK, anchor=MSO_ANCHOR.MIDDLE)
+        line(s.shapes, f"item[{k}].deco", X0, y + h - 0.02, X0 + SPAN, y + h - 0.02)
+
+
+def bars(prs, n):
+    """Нарисованные столбцы: item[n].bar (высота ~ значению), .value над столбцом, .label под ним."""
+    s = new_slide(prs, f"ade: id=bars-{n}; family=bars; bar_max=100; "
+                       f"purpose=Нарисованная столбчатая диаграмма из {n} столбцов с подписями и значениями")
+    cell, base = 1.6, 6.2
+    gap = (SPAN - n * cell) / (n - 1)
+    for i in range(n):
+        k, x = i + 1, X0 + i * (cell + gap)
+        hh = (2.0, 3.0, 3.6, 2.4, 2.8)[i % 5]
+        rect(s.shapes, x + 0.3, base - hh, cell - 0.6, hh, ACCENT, MSO_SHAPE.RECTANGLE).name = f"item[{k}].bar"
+        textbox(s.shapes, f"item[{k}].value", x, base - hh - 0.55, cell, 0.5, "100", 22, True, NAVY,
+                PP_ALIGN.CENTER, MSO_ANCHOR.BOTTOM)
+        textbox(s.shapes, f"item[{k}].label", x, base + 0.1, cell, 0.6, "Подпись", 15, False, INK, PP_ALIGN.CENTER)
+
+
 def table(prs):
     s = new_slide(prs, "ade: id=table-std; family=table; purpose=Таблица данных: шапка и строки, до 3-4 столбцов")
     gf = s.shapes.add_table(5, 3, I(X0), I(1.9), I(SPAN), I(2.75))
@@ -140,7 +180,7 @@ def table(prs):
     tblPr = t._tbl.tblPr
     tblPr.find(qn("a:tableStyleId")).text = "{2D5ABB26-0587-4C30-8999-92F81FD0307C}"
     t.first_row, t.horz_banding = True, False
-    for c, w in enumerate((5.4, 3.3, 3.433)):
+    for c, w in enumerate((5.4, 3.3, 3.233)):
         t.columns[c].width = I(w)
     for r in range(5):
         t.rows[r].height = I(0.55)
@@ -206,6 +246,8 @@ def main(out):
     for n in (2, 3, 4):
         cards(prs, n)
     process(prs, 4)
+    rows(prs, 4)
+    bars(prs, 4)
     kpi(prs, 3)
     table(prs)
     chart(prs)

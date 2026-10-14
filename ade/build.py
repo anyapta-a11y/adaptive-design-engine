@@ -10,9 +10,10 @@ from pptx.oxml.ns import qn
 from . import geom
 from . import textfit as tf
 from .catalog import SLOTS, build_catalog
-from .errors import PlanError
+from .errors import PlanError, require_file
 from .ops import chart as chart_ops
 from .ops import table as table_ops
+from .ops import bars as bar_ops
 from .ops.repeat import ITEM_RE, adapt_items
 from .ops.slides import copy_slide, drop_slides
 from .ops.text import fit_uniform, set_text
@@ -80,9 +81,15 @@ def build_slide(prs, src, entry, ps, action, num):
     new = copy_slide(prs, src)
     tree = new.shapes._spTree
     info = {"variant": entry["id"], "action": action, "cloned": 0, "deleted": 0, "fonts": [], "warnings": []}
+    axis = entry.get("axis", "x")
+    bar_dim = bar_ops.dim_for_axis(axis)
+    bar_ref = bar_ops.reference_length(tree, bar_dim) if entry.get("item_bar") else 0
     if action in ("clone", "trim", "exact") and ps.get("items") is not None:
-        r = adapt_items(tree, len(ps["items"]), entry["family"] in PROPORTIONAL_FAMILIES)
+        r = adapt_items(tree, len(ps["items"]), entry["family"] in PROPORTIONAL_FAMILIES, axis,
+                        (prs.slide_width, prs.slide_height))
         info["cloned"], info["deleted"] = r["cloned"], r["deleted"]
+        info["item_size_ratio"] = {"w": round(r["ratio_w"], 3), "h": round(r["ratio_h"], 3)}
+        info["warnings"] += r["warnings"]
         if r["cloned"] or r["deleted"]:
             info["action"] = "clone" if r["cloned"] else "trim"
     top = _top(tree)
@@ -100,6 +107,12 @@ def build_slide(prs, src, entry, ps, action, num):
     # элементы
     items = ps.get("items") or []
     allowed = {f["name"] for f in entry["item_fields"]}
+    if entry.get("item_bar"):
+        allowed.add("bar")
+        vals = {i: it["bar"] for i, it in enumerate(items, 1) if "bar" in it}
+        r = bar_ops.scale_bars(tree, vals, bar_ref, bar_dim, entry.get("bar_max"))
+        info["bars"] = {k: r[k] for k in ("max", "ref", "dim")}
+        info["warnings"] += r["warnings"]
     for i, it in enumerate(items, 1):
         extra = set(it) - allowed
         if extra:
@@ -107,7 +120,10 @@ def build_slide(prs, src, entry, ps, action, num):
                             f"(есть: {sorted(allowed)})")
         for f in sorted(allowed):
             el = _find(tree, f"item[{i}].{f}")
-            if f in it:
+            if f == "bar":
+                if f not in it:
+                    el.getparent().remove(el)
+            elif f in it:
                 set_text(tf.txbody(el), _check_text(it[f], f"{where}.items[{i}].{f}"))
             elif f == "num":
                 set_text(tf.txbody(el), str(i))
@@ -150,9 +166,15 @@ def build_slide(prs, src, entry, ps, action, num):
 
 
 def build(library, plan, out) -> dict:
+    require_file(library, "Библиотека слайдов")
+    if not isinstance(plan, dict):
+        require_file(plan, "План")
     cat = build_catalog(str(library))
     if not isinstance(plan, dict):
-        plan = json.loads(Path(plan).read_text(encoding="utf-8"))
+        try:
+            plan = json.loads(Path(plan).read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise PlanError(f"План не является корректным JSON: {e}") from e
     if not plan.get("slides"):
         raise PlanError("В плане нет слайдов (ключ 'slides')")
     prs = Presentation(str(library))

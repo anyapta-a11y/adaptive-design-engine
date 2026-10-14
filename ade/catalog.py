@@ -9,14 +9,20 @@ from pptx.oxml.ns import qn
 
 from . import geom
 from . import textfit as tf
-from .errors import MarkupError
-from .ops.repeat import CONN_RE, ITEM_RE
+from .errors import MarkupError, require_file
+from .ops.repeat import (CONN_RE, UNIT_RE, detect_axis, unit_box, unit_elements,
+                         unit_numbers)
 from .ops import table as tbl_ops
 
-FAMILIES = {"title", "cards", "process", "kpi", "table", "chart", "text"}
+FAMILIES = {"title", "cards", "process", "kpi", "table", "chart", "text", "rows", "bars"}
 SLOTS = ("title", "subtitle", "body", "note")
 FIELD_RE = re.compile(r"^item\[(\d+)\]\.(\w+)$")
-NEEDS = {"cards": "items", "process": "items", "kpi": "items", "table": "table",
+SPECIAL = ("bar", "deco")     # не текстовые поля: столбец и декор (deco, deco1, ...)
+
+
+def _special(name: str) -> bool:
+    return name == "bar" or name.startswith("deco")
+NEEDS = {"cards": "items", "process": "items", "rows": "items", "bars": "items", "kpi": "items", "table": "table",
          "chart": "chart", "text": "body", "title": "title"}
 
 
@@ -67,8 +73,8 @@ def analyse_slide(slide, num: int, slide_h: int) -> dict:
         if n in seen:
             raise MarkupError(f"{where}: имя фигуры {n!r} встречается дважды")
         seen[n] = el
-        if n.startswith("item[") and not ITEM_RE.match(n):
-            raise MarkupError(f"{where}: некорректное имя {n!r}, ожидается item[N]")
+        if n.startswith("item[") and not UNIT_RE.match(n):
+            raise MarkupError(f"{where}: некорректное имя {n!r}, ожидается item[N] или item[N].поле")
         if n.startswith("connector[") and not CONN_RE.match(n):
             raise MarkupError(f"{where}: некорректное имя {n!r}, ожидается connector[N]")
 
@@ -79,28 +85,45 @@ def analyse_slide(slide, num: int, slide_h: int) -> dict:
                 raise MarkupError(f"{where}: {s!r} не содержит текста")
             slots.append({"name": s, **_cap(ab_of[id(seen[s])], seen[s])})
 
-    nums = sorted(int(ITEM_RE.match(n).group(1)) for n in seen if ITEM_RE.match(n))
+    nums = unit_numbers(tree)
     if nums != list(range(1, len(nums) + 1)):
         raise MarkupError(f"{where}: нумерация item должна идти подряд с 1, найдено {nums}")
     fields_by_item: dict[int, dict] = {}
+    special_by_item: dict[int, set] = {}
+    layouts = set()
     for k in nums:
-        el = seen[f"item[{k}]"]
         fields: dict[str, dict] = {}
-        for c, ab, _ in geom.walk(list(el), _item_tf(el)) if el.tag == geom.GRP else []:
-            cn = geom.name_of(c) or ""
-            m = FIELD_RE.match(cn)
-            if cn.startswith("item["):
+        special: set = set()
+        uels = unit_elements(tree, k)
+        layouts.add("group" if f"item[{k}]" in seen else "free")
+        for u in uels:
+            un = geom.name_of(u)
+            if un == f"item[{k}]":
+                cands = list(geom.walk(list(u), _item_tf(u))) if u.tag == geom.GRP else []
+            else:
+                cands = [(u, ab_of[id(u)], None)]
+            for c, ab, _ in cands:
+                cn = geom.name_of(c) or ""
+                m = FIELD_RE.match(cn)
+                if not cn.startswith("item["):
+                    continue
                 if not m or int(m.group(1)) != k:
                     raise MarkupError(f"{where}: поле {cn!r} внутри item[{k}] названо неверно")
+                if _special(m.group(2)):
+                    special.add(m.group(2))
+                    continue
                 if tf.txbody(c) is None:
                     raise MarkupError(f"{where}: поле {cn!r} не содержит текста")
                 fields[m.group(2)] = _cap(ab, c)
-        fields_by_item[k] = fields
+        fields_by_item[k], special_by_item[k] = fields, special
     if nums:
-        ref = set(fields_by_item[1])
+        ref, sref = set(fields_by_item[1]), special_by_item[1]
         for k, f in fields_by_item.items():
             if set(f) != ref:
                 raise MarkupError(f"{where}: поля item[{k}] {sorted(f)} не совпадают с item[1] {sorted(ref)}")
+            if special_by_item[k] != sref:
+                raise MarkupError(f"{where}: bar/deco у item[{k}] {sorted(special_by_item[k])} "
+                                  f"не совпадают с item[1] {sorted(sref)}")
     conns = sorted(int(CONN_RE.match(n).group(1)) for n in seen if CONN_RE.match(n))
     if conns and (conns != list(range(1, len(conns) + 1)) or len(conns) != max(len(nums) - 1, 0)):
         raise MarkupError(f"{where}: connector должны быть номерами 1..{len(nums) - 1} "
@@ -132,8 +155,25 @@ def analyse_slide(slide, num: int, slide_h: int) -> dict:
           "body": "body" in seen, "title": "title" in seen}[need]
     if not ok:
         raise MarkupError(f"{where}: для семейства {fam!r} нужна фигура/слоты {need!r}")
+    axis = meta.get("axis") or detect_axis([unit_box(unit_elements(tree, k)) for k in nums])
+    if axis not in ("x", "y"):
+        raise MarkupError(f"{where}: axis должен быть x или y, указано {axis!r}")
+    has_bar = bool(nums) and "bar" in special_by_item[1]
+    bar_max = None
+    if meta.get("bar_max"):
+        if not has_bar:
+            raise MarkupError(f"{where}: bar_max указан, но нет полей item[N].bar")
+        try:
+            bar_max = float(meta["bar_max"])
+        except ValueError:
+            raise MarkupError(f"{where}: bar_max должен быть числом, указано {meta['bar_max']!r}") from None
+        if bar_max <= 0:
+            raise MarkupError(f"{where}: bar_max должен быть > 0")
     return {"id": sid, "family": fam, "purpose": meta["purpose"], "slide_index": num - 1,
-            "slots": slots, "item_count": len(nums),
+            "slots": slots, "item_count": len(nums), "axis": axis,
+            "item_layout": "free" if "free" in layouts else "group",
+            "item_bar": has_bar, "bar_max": bar_max,
+            "item_deco": sorted(x for x in (special_by_item[1] if nums else ()) if x != "bar"),
             "item_fields": [{"name": n, **v} for n, v in fields_by_item.get(1, {}).items()],
             "table": table, "chart": chart}
 
@@ -144,7 +184,11 @@ def _item_tf(el):
 
 
 def build_catalog(path: str) -> dict:
-    prs = Presentation(path)
+    require_file(path, "Библиотека слайдов")
+    try:
+        prs = Presentation(str(path))
+    except Exception as e:
+        raise MarkupError(f"Не удалось открыть библиотеку {path}: {e}") from e
     entries, ids = [], set()
     for i, s in enumerate(prs.slides, 1):
         e = analyse_slide(s, i, prs.slide_height)

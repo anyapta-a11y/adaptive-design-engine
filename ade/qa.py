@@ -17,9 +17,11 @@ from pptx.oxml.ns import qn
 from . import geom
 from . import textfit as tf
 from .build import sidecar_path
+from .errors import AdeError, require_file
+from .ops.repeat import SAFE, UNIT_RE, unit_box, unit_elements, unit_numbers
 from .ops import table as table_ops
 
-ITEM = re.compile(r"^item\[(\d+)\]$")
+MIN_SIZE_WARN, MIN_SIZE_FAIL = 0.6, 0.4    # доля исходного размера элемента
 
 
 def _txt(txb) -> str:
@@ -41,11 +43,13 @@ def _expected_text(ps) -> dict:
         exp[k] = v
     for i, it in enumerate(ps.get("items") or [], 1):
         for k, v in it.items():
+            if k == "bar":
+                continue    # число: проверяется геометрией (_check_bars)
             exp[f"item[{i}].{k}"] = v
     return exp
 
 
-def check_slide(i, slide, ps, W, H, fails, warns):
+def check_slide(i, slide, ps, W, H, fails, warns, safe=SAFE):
     tree = slide.shapes._spTree
     top = [e for e in tree if e.tag in geom.SHAPE_TAGS]
     pre = f"слайд {i}"
@@ -60,6 +64,10 @@ def check_slide(i, slide, ps, W, H, fails, warns):
             box = (ab[0], ab[1], ab[2], table_ops.estimated_height(e.find(".//" + qn("a:tbl"))))
         if box[0] < -1 or box[1] < -1 or box[0] + box[2] > W + 1 or box[1] + box[3] > H + 1:
             fails.append(f"{pre}: {geom.name_of(e)!r} выходит за пределы слайда")
+        elif (box[2] < 0.9 * W or box[3] < 0.9 * H) and (
+                box[0] < safe * W - 1 or box[1] < safe * H - 1
+                or box[0] + box[2] > (1 - safe) * W + 1 or box[1] + box[3] > (1 - safe) * H + 1):
+            warns.append(f"{pre}: {geom.name_of(e)!r} за безопасным полем ({safe:.0%} от краёв)")
         txb = tf.txbody(e) if e.tag == geom.SP else None
         if txb is not None and _txt(txb).strip():
             iw, ih = tf.insets(txb)
@@ -72,9 +80,9 @@ def check_slide(i, slide, ps, W, H, fails, warns):
                              f"(нужно {h:.0f}pt, есть {ah:.0f}pt)")
         if e.tag == geom.GF and e.find(".//" + qn("a:tbl")) is not None:
             _check_table(i, e, fails)
-    # наложение item
-    items = sorted((int(ITEM.match(n).group(1)), ab) for n, v in names.items() if n and ITEM.match(n)
-                   for _, ab in v)
+    # наложение item (группа или набор свободных фигур item[k] / item[k].*)
+    ks = unit_numbers(tree)
+    items = [(k, unit_box(unit_elements(tree, k))) for k in ks]
     for a in range(len(items)):
         for b in range(a + 1, len(items)):
             p, q = items[a][1], items[b][1]
@@ -92,11 +100,37 @@ def check_slide(i, slide, ps, W, H, fails, warns):
             actual = _txt(tf.txbody(got[0][0])) if tf.txbody(got[0][0]) is not None else ""
             if actual.strip() != str(val).strip():
                 fails.append(f"{pre}: потеря контента в {key!r}: ожидалось {str(val)[:40]!r}…, в файле {actual[:40]!r}…")
+        _check_bars(i, names, ps, fails)
         if "table" in ps:
             _check_table_content(i, names.get("table"), ps["table"], fails)
         if "chart" in ps:
             _check_chart_content(i, slide, ps["chart"], fails)
     return {geom.name_of(e) for e, _, _ in walked}
+
+
+def _check_bars(i, names, ps, fails):
+    vals = {n: it["bar"] for n, it in enumerate(ps.get("items") or [], 1) if "bar" in it}
+    if not vals:
+        return
+    boxes = {}
+    for n in vals:
+        got = names.get(f"item[{n}].bar")
+        if not got:
+            fails.append(f"слайд {i}: потеря контента: нет столбца item[{n}].bar")
+            return
+        boxes[n] = got[0][1]
+    def proportional(d):
+        pos = [n for n in vals if vals[n] > 0]
+        if any(boxes[n][d] > 2 for n in vals if vals[n] == 0):
+            return False
+        if not pos:
+            return True
+        k = boxes[pos[0]][d] / vals[pos[0]]
+        return all(abs(boxes[n][d] - k * vals[n]) <= max(2.0, 0.01 * boxes[n][d]) for n in pos)
+
+    ok = proportional(3) or proportional(2)    # высота (столбцы) или ширина (полосы)
+    if not ok:
+        fails.append(f"слайд {i}: размеры столбцов item[n].bar не пропорциональны значениям плана")
 
 
 def _check_table(i, gf, fails):
@@ -173,10 +207,15 @@ def render_pdf(pptx: Path, outdir: Path):
     return {"path": str(pdf), "pages": pages}, None
 
 
-def run_qa(pptx, plan=None, pdf: bool = False, json_out=None) -> dict:
-    pptx = Path(pptx)
+def run_qa(pptx, plan=None, pdf: bool = False, json_out=None, safe: float = SAFE) -> dict:
+    pptx = require_file(pptx, "Файл презентации")
+    if plan is not None and isinstance(plan, (str, Path)):
+        require_file(plan, "План")
     fails, warns = [], []
-    z = zipfile.ZipFile(pptx)
+    try:
+        z = zipfile.ZipFile(pptx)
+    except zipfile.BadZipFile:
+        raise AdeError(f"Файл не является корректным PPTX (zip): {pptx}") from None
     if z.testzip() is not None:
         fails.append("повреждённый zip")
     _all_ids(z, fails)
@@ -199,7 +238,7 @@ def run_qa(pptx, plan=None, pdf: bool = False, json_out=None) -> dict:
                     seen_parts[pn] = i
     for i, s in enumerate(slides, 1):
         ps = pslides[i - 1] if pslides and i - 1 < len(pslides) else None
-        check_slide(i, s, ps, prs.slide_width, prs.slide_height, fails, warns)
+        check_slide(i, s, ps, prs.slide_width, prs.slide_height, fails, warns, safe)
     sc = sidecar_path(pptx)
     if sc.exists():
         for i, info in enumerate(json.loads(sc.read_text(encoding="utf-8"))["slides"], 1):
@@ -208,6 +247,15 @@ def run_qa(pptx, plan=None, pdf: bool = False, json_out=None) -> dict:
             if info.get("cloned") or info.get("deleted"):
                 warns.append(f"слайд {i}: вариант {info['variant']} достроен "
                              f"(клонов: {info['cloned']}, удалено: {info['deleted']}) вместо готового")
+            rt = info.get("item_size_ratio")
+            if rt:
+                r = min(rt["w"], rt["h"])
+                if r < MIN_SIZE_FAIL:
+                    fails.append(f"слайд {i}: элементы уменьшены до {r:.0%} исходного размера "
+                                 f"(< {MIN_SIZE_FAIL:.0%}) — разделите на слайды")
+                elif r < MIN_SIZE_WARN:
+                    warns.append(f"слайд {i}: элементы уменьшены до {r:.0%} исходного размера "
+                                 f"(< {MIN_SIZE_WARN:.0%}) — проверьте читаемость или разделите на слайды")
             for w in info.get("warnings", []):
                 warns.append(f"слайд {i}: {w}")
     res = {"status": "FAIL" if fails else "PASS", "pptx": str(pptx), "slides": len(slides),

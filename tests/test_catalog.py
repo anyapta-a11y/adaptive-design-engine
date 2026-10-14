@@ -8,7 +8,7 @@ from ade.errors import MarkupError
 def test_catalog_contents(library):
     cat = build_catalog(str(library))
     by = {e["id"]: e for e in cat["slides"]}
-    assert set(by) == {"title", "cards-2", "cards-3", "cards-4", "process-4", "kpi-3",
+    assert set(by) == {"title", "rows-4", "bars-4", "cards-2", "cards-3", "cards-4", "process-4", "kpi-3",
                        "table-std", "chart-bar", "text"}
     assert cat["families"]["cards"] == ["cards-2", "cards-3", "cards-4"]
     assert [by[f"cards-{n}"]["item_count"] for n in (2, 3, 4)] == [2, 3, 4]
