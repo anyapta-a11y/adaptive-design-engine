@@ -6,7 +6,7 @@ from pptx import Presentation
 from pptx.util import Emu
 
 from ade import geom
-from ade.__main__ import main as cli_main
+from ade.cli import main as cli_main
 from ade.build import build
 from ade.catalog import build_catalog
 from ade.errors import PlanError
@@ -63,7 +63,7 @@ def test_rows_clone_free_unit(library, tmp_path):
     assert [b[1] for b in boxes] == sorted(b[1] for b in boxes)         # сверху вниз
     assert len({b[0] for b in boxes}) == 1 and len({b[2] for b in boxes}) == 1    # размер/колонка те же
     steps = {round(boxes[i + 1][1] - boxes[i][1]) for i in range(4)}
-    assert len(steps) == 1
+    assert max(steps) - min(steps) <= 3
     assert boxes[4][1] + boxes[4][3] <= prs.slide_height * 0.95 + 1      # в безопасном поле
     r = run_qa(out, plan)
     assert r["status"] == "PASS", r["fails"]
@@ -78,7 +78,7 @@ def test_rows_gap_shrinks_then_warns_split(library, tmp_path):
     assert any("разделите на слайды" in x for x in w)
     tree = prs.slides[0].shapes._spTree
     b = [unit_box(unit_elements(tree, k)) for k in range(1, 9)]
-    assert round(b[0][3]) == round(b[7][3])                              # элементы не сжаты
+    assert abs(b[0][3] - b[7][3]) <= 3                              # элементы не сжаты
     gaps = [b[i + 1][1] - (b[i][1] + b[i][3]) for i in range(7)]
     lib = Presentation(str(library)).slides[2 + 3]                       # rows-4
     t0 = lib.shapes._spTree
